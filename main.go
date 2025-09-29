@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -34,7 +35,7 @@ type TestResult struct {
 	Stderr   string `json:"stderr,omitempty"`
 	Reason   string `json:"reason,omitempty"`
 	ExitCode int    `json:"exit_code,omitempty"`
-	Signal   int    `json:"signal,omitempty"`
+	Signal   string `json:"signal,omitempty"`
 	TimeMs   int64  `json:"time_ms,omitempty"`
 	MaxRSSKB int64  `json:"max_rss_kb,omitempty"`
 }
@@ -162,5 +163,66 @@ func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int, workdir st
 			TimeMs: dur.Milliseconds(),
 			Reason: fmt.Sprintf("exceeded %dms", timeLimitMs),
 		}
+	}
+
+	stderrBytes, _ := os.ReadFile(progStderr)
+	stderr := string(stderrBytes)
+
+	var maxRSSKB int64
+	if tb, err := os.ReadFile(timeOut); err == nil {
+		for _, ln := range strings.Split(string(tb), "\n") {
+			if m := reMaxRSS.FindStringSubmatch(strings.TrimSpace(ln)); len(m) == 2 {
+				fmt.Sscan(m[1], &maxRSSKB)
+				break
+			}
+		}
+	}
+
+	stdout := stdoutBuf.String()
+
+	if waitErr == nil {
+		return TestResult{
+			Status:   "OK",
+			Stdout:   stdout,
+			Stderr:   stderr,
+			TimeMs:   dur.Milliseconds(),
+			MaxRSSKB: maxRSSKB,
+		}
+	}
+
+	var exitCode int
+	var sig string
+	if ee := new(exec.ExitError); errors.As(waitErr, &ee) {
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
+			exitCode = ws.ExitStatus()
+			if ws.Signaled() {
+				sig = ws.Signal().String()
+			}
+		}
+	}
+
+	status := "RTE"
+	reason := "runtime error"
+	if sig != "" {
+		reason = "terminated by " + sig
+		if sig == "killed" || sig == "SIGKILL" {
+			status = "MLE"
+			reason = "likely memory limit exceeded (SIGKILL)"
+		}
+	}
+	if exitCode == 137 && sig == "" {
+		status = "MLE"
+		reason = "likely memory limit exceeded (exit 137)"
+	}
+
+	return TestResult{
+		Status:   status,
+		Stdout:   stdout,
+		Stderr:   stderr,
+		Reason:   reason,
+		ExitCode: exitCode,
+		Signal:   sig,
+		TimeMs:   dur.Milliseconds(),
+		MaxRSSKB: maxRSSKB,
 	}
 }
