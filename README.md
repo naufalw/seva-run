@@ -68,9 +68,54 @@ And send POST request to `localhost:8080/judge`
 }
 ```
 
+### Runtime Exception 
+
 
 ---
 
 ## Limitations
 Memory limit is not fully stable, as i do not know how to it xD, but currently it will limit the memory such that the program is going to throw std::badalloc.
 
+---
+## Memory RSS Test
+
+With this payload tests memory buffer allocation for 32 KB, 64 KB, and 96KB
+```
+{
+  "source_cpp": "#include <bits/stdc++.h>\nusing namespace std;int main(){ios::sync_with_stdio(false);cin.tie(nullptr); size_t mb; if(!(cin>>mb)) return 0; size_t bytes = mb*1024ull*1024ull; vector<char> buf(bytes); for(size_t i=0;i<bytes;i+=4096) buf[i]=1; this_thread::sleep_for(chrono::milliseconds(200)); cout<<\"OK\\n\"; }",
+  "time_limit_ms": 2000,
+  "memory_limit_mb": 128,
+  "test_cases": [
+    { "stdin": "32\n", "expected_stdout": "OK" },
+    { "stdin": "64\n", "expected_stdout": "OK" },
+    { "stdin": "96\n", "expected_stdout": "OK" }
+  ]
+}
+```
+
+This program outputs
+```
+{
+  "compile_ok": true,
+  "results": [
+    {
+      "status": "AC",
+      "stdout": "OK\n",
+      "time_ms": 212,
+      "max_rss_kb": 35496
+    },
+    {
+      "status": "AC",
+      "stdout": "OK\n",
+      "time_ms": 224,
+      "max_rss_kb": 68320
+    },
+    {
+      "status": "AC",
+      "stdout": "OK\n",
+      "time_ms": 224,
+      "max_rss_kb": 101092
+    }
+  ]
+}
+```
