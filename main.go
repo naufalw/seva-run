@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -119,6 +123,8 @@ var reMaxRSS = regexp.MustCompile(`(?i)^Maximum resident set size $begin:math:te
 
 func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int, workdir string) TestResult {
 
+	start := time.Now()
+
 	progStderr := filepath.Join(workdir, "stderr.txt")
 	timeOut := filepath.Join(workdir, "timeout.txt")
 	memKB := memLimitMB * 1024
@@ -127,4 +133,34 @@ func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int, workdir st
 		`ulimit -v %d; ulimit -s 8192; /usr/bin/time -v -o %q bash -lc 'exec "%s" 2>%q'`,
 		memKB, timeOut, binary, progStderr,
 	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeLimitMs)*time.Millisecond)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", "-lc", sh)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Stdin = strings.NewReader(stdin)
+
+	var stdoutBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+
+	if err := cmd.Start(); err != nil {
+		return TestResult{
+			Status: "RTE",
+			Reason: fmt.Sprintf("failed to start: %v", err),
+		}
+	}
+
+	waitErr := cmd.Wait()
+	dur := time.Since(start)
+
+	// TLE
+	if ctx.Err() == context.DeadlineExceeded {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		return TestResult{
+			Status: "TLE",
+			TimeMs: dur.Milliseconds(),
+			Reason: fmt.Sprintf("exceeded %dms", timeLimitMs),
+		}
+	}
 }
