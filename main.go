@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -107,7 +106,7 @@ func handleJudge(c *gin.Context) {
 	stopOn := map[string]bool{"CE": true, "RTE": true, "TLE": true, "MLE": true}
 
 	for _, test := range req.Tests {
-		result := runWithLimits(binPath, test.Stdin, req.TimeLimitMs, req.MemoryLimitMB, workdir)
+		result := runWithLimits(binPath, test.Stdin, req.TimeLimitMs, req.MemoryLimitMB)
 
 		if result.Status == "OK" || result.Status == "" {
 			out := strings.TrimSpace(result.Stdout)
@@ -140,65 +139,49 @@ func compileCPP(src, out string) (string, error) {
 	return stderr.String(), err
 }
 
-var reMaxRSS = regexp.MustCompile(`(?i)Maximum resident set size \(kbytes\):\s*([0-9]+)`)
-
-func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int, workdir string) TestResult {
-
+func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int) TestResult {
 	start := time.Now()
 
-	progStderr := filepath.Join(workdir, "stderr.txt")
-	timeOut := filepath.Join(workdir, "timeout.txt")
 	memKB := memLimitMB * 1024
-
-	sh := fmt.Sprintf(
-		`ulimit -v %d; ulimit -s 8192; /usr/bin/time -v -o %q bash -lc 'exec "%s" 2>%q'`,
-		memKB, timeOut, binary, progStderr,
-	)
+	sh := fmt.Sprintf(`ulimit -v %d; ulimit -s 8192; %s`, memKB, binary)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeLimitMs)*time.Millisecond)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-lc", sh)
+	cmd := exec.CommandContext(ctx, "bash", "-c", sh)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdin = strings.NewReader(stdin)
 
-	var stdoutBuf bytes.Buffer
+	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Start(); err != nil {
-		return TestResult{
-			Status: "RTE",
-			Reason: fmt.Sprintf("failed to start: %v", err),
-		}
+		return TestResult{Status: "RTE", Reason: fmt.Sprintf("failed to start: %v", err)}
 	}
 
 	waitErr := cmd.Wait()
 	dur := time.Since(start)
 
-	// TLE
-	if ctx.Err() == context.DeadlineExceeded {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		return TestResult{
-			Status: "TLE",
-			TimeMs: dur.Milliseconds(),
-			Reason: fmt.Sprintf("exceeded %dms", timeLimitMs),
-		}
-	}
-
-	stderrBytes, _ := os.ReadFile(progStderr)
-	stderr := string(stderrBytes)
-
 	var maxRSSKB int64
-	if tb, err := os.ReadFile(timeOut); err == nil {
-		for _, ln := range strings.Split(string(tb), "\n") {
-			if m := reMaxRSS.FindStringSubmatch(strings.TrimSpace(ln)); len(m) == 2 {
-				fmt.Sscan(m[1], &maxRSSKB)
-				break
-			}
+	if cmd.ProcessState != nil {
+		if rusage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
+			maxRSSKB = rusage.Maxrss
 		}
 	}
 
 	stdout := stdoutBuf.String()
+	stderr := stderrBuf.String()
+
+	if ctx.Err() == context.DeadlineExceeded {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		return TestResult{
+			Status:   "TLE",
+			TimeMs:   dur.Milliseconds(),
+			Reason:   fmt.Sprintf("exceeded %dms", timeLimitMs),
+			MaxRSSKB: maxRSSKB,
+		}
+	}
 
 	if waitErr == nil {
 		return TestResult{
