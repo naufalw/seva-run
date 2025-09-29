@@ -65,7 +65,7 @@ func handleJudge(c *gin.Context) {
 		return
 	}
 
-	// Default casess
+	// Default cases
 	if req.TimeLimitMs <= 0 {
 		req.TimeLimitMs = 1000
 	}
@@ -106,7 +106,7 @@ func handleJudge(c *gin.Context) {
 	stopOn := map[string]bool{"CE": true, "RTE": true, "TLE": true, "MLE": true}
 
 	for _, test := range req.Tests {
-		result := runWithLimits(binPath, test.Stdin, req.TimeLimitMs, req.MemoryLimitMB)
+		result := runWithLimits(binPath, test.Stdin, req.TimeLimitMs, req.MemoryLimitMB, workdir)
 
 		if result.Status == "OK" || result.Status == "" {
 			out := strings.TrimSpace(result.Stdout)
@@ -139,9 +139,7 @@ func compileCPP(src, out string) (string, error) {
 	return stderr.String(), err
 }
 
-func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int) TestResult {
-	start := time.Now()
-
+func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int, workdir string) TestResult {
 	memKB := memLimitMB * 1024
 	sh := fmt.Sprintf(`ulimit -v %d; ulimit -s 8192; %s`, memKB, binary)
 
@@ -160,72 +158,90 @@ func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int) TestResult
 		return TestResult{Status: "RTE", Reason: fmt.Sprintf("failed to start: %v", err)}
 	}
 
-	waitErr := cmd.Wait()
-	dur := time.Since(start)
+	waitResult := make(chan error)
+	go func() {
+		waitResult <- cmd.Wait()
+	}()
 
-	var maxRSSKB int64
-	if cmd.ProcessState != nil {
-		if rusage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
-			maxRSSKB = rusage.Maxrss
-		}
-	}
+	start := time.Now()
 
-	stdout := stdoutBuf.String()
-	stderr := stderrBuf.String()
-
-	if ctx.Err() == context.DeadlineExceeded {
+	select {
+	case <-ctx.Done():
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		dur := time.Since(start)
+
+		<-waitResult
+
+		var maxRSSKB int64
+		if cmd.ProcessState != nil {
+			if rusage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
+				maxRSSKB = rusage.Maxrss
+			}
+		}
+
 		return TestResult{
 			Status:   "TLE",
 			TimeMs:   dur.Milliseconds(),
 			Reason:   fmt.Sprintf("exceeded %dms", timeLimitMs),
 			MaxRSSKB: maxRSSKB,
 		}
-	}
 
-	if waitErr == nil {
+	case waitErr := <-waitResult:
+		dur := time.Since(start)
+		var maxRSSKB int64
+		if cmd.ProcessState != nil {
+			if rusage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
+				maxRSSKB = rusage.Maxrss
+			}
+		}
+
+		stdout := stdoutBuf.String()
+		stderr := stderrBuf.String()
+
+		if waitErr == nil {
+			return TestResult{
+				Status:   "OK",
+				Stdout:   stdout,
+				Stderr:   stderr,
+				TimeMs:   dur.Milliseconds(),
+				MaxRSSKB: maxRSSKB,
+			}
+		}
+
+		var exitCode int
+		var sig string
+		if ee := new(exec.ExitError); errors.As(waitErr, &ee) {
+			if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
+				exitCode = ws.ExitStatus()
+				if ws.Signaled() {
+					sig = ws.Signal().String()
+				}
+			}
+		}
+
+		status := "RTE"
+		reason := "runtime error"
+		if sig != "" {
+			reason = "terminated by " + sig
+			if sig == "killed" || sig == "SIGKILL" {
+				status = "MLE"
+				reason = "likely memory limit exceeded (SIGKILL)"
+			}
+		}
+		if exitCode == 137 && sig == "" {
+			status = "MLE"
+			reason = "likely memory limit exceeded (exit 137)"
+		}
+
 		return TestResult{
-			Status:   "OK",
+			Status:   status,
 			Stdout:   stdout,
 			Stderr:   stderr,
+			Reason:   reason,
+			ExitCode: exitCode,
+			Signal:   sig,
 			TimeMs:   dur.Milliseconds(),
 			MaxRSSKB: maxRSSKB,
 		}
-	}
-
-	var exitCode int
-	var sig string
-	if ee := new(exec.ExitError); errors.As(waitErr, &ee) {
-		if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
-			exitCode = ws.ExitStatus()
-			if ws.Signaled() {
-				sig = ws.Signal().String()
-			}
-		}
-	}
-
-	status := "RTE"
-	reason := "runtime error"
-	if sig != "" {
-		reason = "terminated by " + sig
-		if sig == "killed" || sig == "SIGKILL" {
-			status = "MLE"
-			reason = "likely memory limit exceeded (SIGKILL)"
-		}
-	}
-	if exitCode == 137 && sig == "" {
-		status = "MLE"
-		reason = "likely memory limit exceeded (exit 137)"
-	}
-
-	return TestResult{
-		Status:   status,
-		Stdout:   stdout,
-		Stderr:   stderr,
-		Reason:   reason,
-		ExitCode: exitCode,
-		Signal:   sig,
-		TimeMs:   dur.Milliseconds(),
-		MaxRSSKB: maxRSSKB,
 	}
 }
