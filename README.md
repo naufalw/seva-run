@@ -43,8 +43,28 @@ And send POST request to `localhost:8080/judge`
   ]
 }
 ```
+Output:
+```
+{
+  "compile_ok": true,
+  "results": [
+    {
+      "status": "AC",
+      "stdout": "49\n",
+      "time_ms": 4,
+      "max_rss_kb": 9688
+    },
+    {
+      "status": "AC",
+      "stdout": "1000000\n",
+      "max_rss_kb": 9720
+    }
+  ]
+}
+```
 
 ### Wrong Answer
+Input:
 ```
 {
   "source_cpp": "#include <bits/stdc++.h>\nusing namespace std;int main(){long long n; if(!(cin>>n)) return 0; cout << (n*n+1) << \"\\n\"; }",
@@ -55,8 +75,27 @@ And send POST request to `localhost:8080/judge`
   ]
 }
 ```
+Output:
+```
+{
+  "compile_ok": true,
+  "results": [
+    {
+      "status": "WA",
+      "stdout": "50\n",
+      "reason": "expected \"49\", got \"50\"",
+      "time_ms": 1,
+      "max_rss_kb": 9672
+    }
+  ]
+}
+```
+
+
 
 ### Time Limit Exception (TLE)
+Infinite loop
+Input:
 ```
 {
   "source_cpp": "#include <bits/stdc++.h>\nusing namespace std;int main(){volatile unsigned long long x=0; while(true){ x+=1; } }",
@@ -67,9 +106,51 @@ And send POST request to `localhost:8080/judge`
   ]
 }
 ```
+Output:
+```
+{
+  "compile_ok": true,
+  "results": [
+    {
+      "status": "TLE",
+      "reason": "exceeded 100ms",
+      "time_ms": 102,
+      "max_rss_kb": 9620
+    }
+  ]
+}
+```
+
+
 
 ### Runtime Exception 
-
+This will result in segfault
+Input:
+```
+{
+  "source_cpp": "#include <bits/stdc++.h>\nusing namespace std;int main(){int* p=nullptr; *p=42; return 0;}",
+  "time_limit_ms": 1000,
+  "memory_limit_mb": 128,
+  "test_cases": [
+    { "stdin": "0\n", "expected_stdout": "" }
+  ]
+}
+```
+Output:
+```
+{
+  "compile_ok": true,
+  "results": [
+    {
+      "status": "RTE",
+      "reason": "terminated by segmentation fault",
+      "exit_code": -1,
+      "signal": "segmentation fault",
+      "max_rss_kb": 9284
+    }
+  ]
+}
+```
 
 ---
 
