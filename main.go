@@ -37,7 +37,7 @@ type TestResult struct {
 	ExitCode int    `json:"exit_code,omitempty"`
 	Signal   string `json:"signal,omitempty"`
 	TimeMs   int64  `json:"time_ms,omitempty"`
-	MaxRSSKB int64  `json:"max_rss_kb,omitempty"`
+	MaxRSSKB int64  `json:"max_rss_kb"`
 }
 
 type JudgeResponse struct {
@@ -140,7 +140,7 @@ func compileCPP(src, out string) (string, error) {
 	return stderr.String(), err
 }
 
-var reMaxRSS = regexp.MustCompile(`(?i)^Maximum resident set size $begin:math:text$kbytes$end:math:text$:\s*([0-9]+)\s*$`)
+var reMaxRSS = regexp.MustCompile(`(?i)Maximum resident set size \(kbytes\):\s*([0-9]+)`)
 
 func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int, workdir string) TestResult {
 
