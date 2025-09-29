@@ -2,12 +2,13 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/gin-gonic/gin"
 )
 
 type TestCase struct {
@@ -40,20 +41,22 @@ type JudgeResponse struct {
 }
 
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /judge", handleJudge)
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.Default()
+
+	r.POST("/judge", handleJudge)
 
 	addr := ":8080"
 	fmt.Println("Listening on", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	if err := r.Run(addr); err != nil {
 		panic(err)
 	}
 }
 
-func handleJudge(w http.ResponseWriter, r *http.Request) {
+func handleJudge(c *gin.Context) {
 	var req JudgeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := c.BindJSON(&req); err != nil {
+		c.String(http.StatusBadRequest, "bad json: %v", err)
 		return
 	}
 
@@ -65,24 +68,34 @@ func handleJudge(w http.ResponseWriter, r *http.Request) {
 		req.MemoryLimitMB = 128
 	}
 	if len(req.Tests) == 0 {
-		http.Error(w, "No test cases provided", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No test cases provided"})
 		return
 	}
 
 	workdir, err := os.MkdirTemp("", "seva-run-*")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		c.String(http.StatusInternalServerError, "failed to create workdir: %v", err)
 		return
 	}
 	defer os.RemoveAll(workdir)
 
 	sourcePath := filepath.Join(workdir, "main.cpp")
 	if err := os.WriteFile(sourcePath, []byte(req.SourceCPP), 0644); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		c.String(http.StatusInternalServerError, "failed to write source code: %v", err)
 		return
 	}
 
 	binPath := filepath.Join(workdir, "prog")
+
+	// COMPILE STEPS
+	compileStderr, err := compileCPP(sourcePath, binPath)
+	if err != nil {
+		c.JSON(http.StatusOK, JudgeResponse{
+			CompileOK:     false,
+			CompileStderr: compileStderr,
+		})
+		return
+	}
 
 }
 
