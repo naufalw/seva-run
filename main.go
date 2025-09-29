@@ -107,9 +107,29 @@ func handleJudge(c *gin.Context) {
 	stopOn := map[string]bool{"CE": true, "RTE": true, "TLE": true, "MLE": true}
 
 	for _, test := range req.Tests {
+		result := runWithLimits(binPath, test.Stdin, req.TimeLimitMs, req.MemoryLimitMB, workdir)
+
+		if result.Status == "OK" || result.Status == "" {
+			out := strings.TrimSpace(result.Stdout)
+			exp := strings.TrimSpace(test.ExpectedStdout)
+			if out == exp {
+				result.Status = "AC"
+			} else {
+				result.Status = "WA"
+				if result.Reason == "" {
+					result.Reason = fmt.Sprintf("expected %q, got %q", exp, out)
+				}
+			}
+		}
+
+		resp.Results = append(resp.Results, result)
+		if stopOn[result.Status] {
+			break
+		}
 
 	}
 
+	c.JSON(http.StatusOK, resp)
 }
 
 func compileCPP(src, out string) (string, error) {
