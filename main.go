@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 
 	"github.com/gin-gonic/gin"
 )
@@ -97,6 +98,13 @@ func handleJudge(c *gin.Context) {
 		return
 	}
 
+	resp := JudgeResponse{CompileOK: true}
+	stopOn := map[string]bool{"CE": true, "RTE": true, "TLE": true, "MLE": true}
+
+	for _, test := range req.Tests {
+
+	}
+
 }
 
 func compileCPP(src, out string) (string, error) {
@@ -105,4 +113,18 @@ func compileCPP(src, out string) (string, error) {
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	return stderr.String(), err
+}
+
+var reMaxRSS = regexp.MustCompile(`(?i)^Maximum resident set size $begin:math:text$kbytes$end:math:text$:\s*([0-9]+)\s*$`)
+
+func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int, workdir string) TestResult {
+
+	progStderr := filepath.Join(workdir, "stderr.txt")
+	timeOut := filepath.Join(workdir, "timeout.txt")
+	memKB := memLimitMB * 1024
+
+	sh := fmt.Sprintf(
+		`ulimit -v %d; ulimit -s 8192; /usr/bin/time -v -o %q bash -lc 'exec "%s" 2>%q'`,
+		memKB, timeOut, binary, progStderr,
+	)
 }
