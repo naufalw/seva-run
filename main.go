@@ -106,7 +106,7 @@ func handleJudge(c *gin.Context) {
 	stopOn := map[string]bool{"CE": true, "RTE": true, "TLE": true, "MLE": true}
 
 	for _, test := range req.Tests {
-		result := runWithLimits(binPath, test.Stdin, req.TimeLimitMs, req.MemoryLimitMB, workdir)
+		result := runWithLimits(binPath, test.Stdin, req.TimeLimitMs, req.MemoryLimitMB)
 
 		if result.Status == "OK" || result.Status == "" {
 			out := strings.TrimSpace(result.Stdout)
@@ -139,11 +139,13 @@ func compileCPP(src, out string) (string, error) {
 	return stderr.String(), err
 }
 
-func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int, workdir string) TestResult {
+func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int) TestResult {
 	memKB := memLimitMB * 1024
-	sh := fmt.Sprintf(`ulimit -v %d; ulimit -s 8192; %s`, memKB, binary)
+	cpuLimitSec := (timeLimitMs + 999) / 1000
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeLimitMs)*time.Millisecond)
+	sh := fmt.Sprintf(`ulimit -t %d; ulimit -v %d; ulimit -s 8192; %s`, cpuLimitSec, memKB, binary)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeLimitMs+500)*time.Millisecond)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", sh)
@@ -154,94 +156,69 @@ func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int, workdir st
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf
 
-	if err := cmd.Start(); err != nil {
-		return TestResult{Status: "RTE", Reason: fmt.Sprintf("failed to start: %v", err)}
+	start := time.Now()
+	waitErr := cmd.Run()
+	dur := time.Since(start)
+
+	var maxRSSKB int64
+	if cmd.ProcessState != nil {
+		if rusage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
+			maxRSSKB = rusage.Maxrss
+		}
 	}
 
-	waitResult := make(chan error)
-	go func() {
-		waitResult <- cmd.Wait()
-	}()
+	stdout := stdoutBuf.String()
+	stderr := stderrBuf.String()
 
-	start := time.Now()
-
-	select {
-	case <-ctx.Done():
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		dur := time.Since(start)
-
-		<-waitResult
-
-		var maxRSSKB int64
-		if cmd.ProcessState != nil {
-			if rusage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
-				maxRSSKB = rusage.Maxrss
-			}
-		}
-
+	if waitErr == nil {
 		return TestResult{
-			Status:   "TLE",
-			TimeMs:   dur.Milliseconds(),
-			Reason:   fmt.Sprintf("exceeded %dms", timeLimitMs),
-			MaxRSSKB: maxRSSKB,
-		}
-
-	case waitErr := <-waitResult:
-		dur := time.Since(start)
-		var maxRSSKB int64
-		if cmd.ProcessState != nil {
-			if rusage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
-				maxRSSKB = rusage.Maxrss
-			}
-		}
-
-		stdout := stdoutBuf.String()
-		stderr := stderrBuf.String()
-
-		if waitErr == nil {
-			return TestResult{
-				Status:   "OK",
-				Stdout:   stdout,
-				Stderr:   stderr,
-				TimeMs:   dur.Milliseconds(),
-				MaxRSSKB: maxRSSKB,
-			}
-		}
-
-		var exitCode int
-		var sig string
-		if ee := new(exec.ExitError); errors.As(waitErr, &ee) {
-			if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
-				exitCode = ws.ExitStatus()
-				if ws.Signaled() {
-					sig = ws.Signal().String()
-				}
-			}
-		}
-
-		status := "RTE"
-		reason := "runtime error"
-		if sig != "" {
-			reason = "terminated by " + sig
-			if sig == "killed" || sig == "SIGKILL" {
-				status = "MLE"
-				reason = "likely memory limit exceeded (SIGKILL)"
-			}
-		}
-		if exitCode == 137 && sig == "" {
-			status = "MLE"
-			reason = "likely memory limit exceeded (exit 137)"
-		}
-
-		return TestResult{
-			Status:   status,
+			Status:   "OK",
 			Stdout:   stdout,
 			Stderr:   stderr,
-			Reason:   reason,
-			ExitCode: exitCode,
-			Signal:   sig,
 			TimeMs:   dur.Milliseconds(),
 			MaxRSSKB: maxRSSKB,
 		}
+	}
+
+	var exitCode int
+	var sig string
+	if ee := new(exec.ExitError); errors.As(waitErr, &ee) {
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
+			exitCode = ws.ExitStatus()
+			if ws.Signaled() {
+				sig = ws.Signal().String()
+			}
+		}
+	}
+
+	status := "RTE"
+	reason := "runtime error " + waitErr.Error()
+	if sig != "" {
+		switch sig {
+		case "CPU time limit exceeded":
+			status = "TLE"
+			reason = fmt.Sprintf("CPU time limit of %ds exceeded", cpuLimitSec)
+		case "killed":
+			if dur.Milliseconds() >= int64(timeLimitMs) {
+				status = "TLE"
+				reason = fmt.Sprintf("exceeded wall-clock time limit of %dms", timeLimitMs)
+			} else {
+				status = "MLE"
+				reason = "likely memory limit exceeded (killed)"
+			}
+		default:
+			reason = "terminated by signal: " + sig
+		}
+	}
+
+	return TestResult{
+		Status:   status,
+		Stdout:   stdout,
+		Stderr:   stderr,
+		Reason:   reason,
+		ExitCode: exitCode,
+		Signal:   sig,
+		TimeMs:   dur.Milliseconds(),
+		MaxRSSKB: maxRSSKB,
 	}
 }
