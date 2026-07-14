@@ -143,7 +143,10 @@ func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int) TestResult
 	memKB := memLimitMB * 1024
 	cpuLimitSec := (timeLimitMs + 999) / 1000
 
-	sh := fmt.Sprintf(`ulimit -t %d; ulimit -v %d; ulimit -s 8192; %s`, cpuLimitSec, memKB, binary)
+	// exec (not a plain trailing command) replaces the shell with the binary
+	// at the same PID, so the rusage we wait on describes the submission
+	// itself rather than bash.
+	sh := fmt.Sprintf(`ulimit -t %d; ulimit -v %d; ulimit -s 8192; exec %s`, cpuLimitSec, memKB, binary)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeLimitMs+500)*time.Millisecond)
 	defer cancel()
@@ -160,10 +163,12 @@ func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int) TestResult
 	waitErr := cmd.Run()
 	dur := time.Since(start)
 
-	var maxRSSKB int64
+	var maxRSSKB, cpuMs int64
 	if cmd.ProcessState != nil {
 		if rusage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
 			maxRSSKB = rusage.Maxrss
+			cpuMs = int64(rusage.Utime.Sec)*1000 + int64(rusage.Utime.Usec)/1000 +
+				int64(rusage.Stime.Sec)*1000 + int64(rusage.Stime.Usec)/1000
 		}
 	}
 
@@ -171,11 +176,22 @@ func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int) TestResult
 	stderr := stderrBuf.String()
 
 	if waitErr == nil {
+
+		if cpuMs > int64(timeLimitMs) {
+			return TestResult{
+				Status:   "TLE",
+				Stdout:   stdout,
+				Stderr:   stderr,
+				Reason:   fmt.Sprintf("CPU time %dms exceeded limit of %dms", cpuMs, timeLimitMs),
+				TimeMs:   cpuMs,
+				MaxRSSKB: maxRSSKB,
+			}
+		}
 		return TestResult{
 			Status:   "OK",
 			Stdout:   stdout,
 			Stderr:   stderr,
-			TimeMs:   dur.Milliseconds(),
+			TimeMs:   cpuMs,
 			MaxRSSKB: maxRSSKB,
 		}
 	}
@@ -218,7 +234,7 @@ func runWithLimits(binary, stdin string, timeLimitMs, memLimitMB int) TestResult
 		Reason:   reason,
 		ExitCode: exitCode,
 		Signal:   sig,
-		TimeMs:   dur.Milliseconds(),
+		TimeMs:   cpuMs,
 		MaxRSSKB: maxRSSKB,
 	}
 }
