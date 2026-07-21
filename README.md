@@ -22,8 +22,12 @@ docker run --rm -p 8080:8080 \
               --cpus=1.0 \
               --memory=256m --memory-swap=256m \
               --pids-limit=128 \
+              -e INTERNAL_JUDGE_SECRET=your-shared-secret \
               seva-run
 ```
+
+`INTERNAL_JUDGE_SECRET` is required — the server refuses to start without it. Requests to
+`/judge` must include a matching `x-internal-secret` header, otherwise they get a `401`.
 
 And send POST request to `localhost:8080/judge`
 

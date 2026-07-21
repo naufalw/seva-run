@@ -46,15 +46,31 @@ type JudgeResponse struct {
 }
 
 func main() {
+	secret := os.Getenv("INTERNAL_JUDGE_SECRET")
+	if secret == "" {
+		fmt.Println("INTERNAL_JUDGE_SECRET env var is required")
+		os.Exit(1)
+	}
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
-	r.POST("/judge", handleJudge)
+	r.POST("/judge", requireInternalSecret(secret), handleJudge)
 
 	addr := ":8080"
 	fmt.Println("Listening on", addr)
 	if err := r.Run(addr); err != nil {
 		panic(err)
+	}
+}
+
+func requireInternalSecret(secret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.GetHeader("x-internal-secret") != secret {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			return
+		}
+		c.Next()
 	}
 }
 
